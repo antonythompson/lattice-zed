@@ -48,7 +48,9 @@ actions!(
         /// Toggles the terminal panel.
         Toggle,
         /// Toggles focus on the terminal panel.
-        ToggleFocus
+        ToggleFocus,
+        /// Opens a new terminal and runs the Claude CLI in it.
+        NewClaude
     ]
 );
 
@@ -56,6 +58,7 @@ pub fn init(cx: &mut App) {
     cx.observe_new(
         |workspace: &mut Workspace, _window, _: &mut Context<Workspace>| {
             workspace.register_action(TerminalPanel::new_terminal);
+            workspace.register_action(TerminalPanel::new_claude);
             workspace.register_action(TerminalPanel::open_terminal);
             workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
                 if is_enabled_in_workspace(workspace, cx) {
@@ -170,6 +173,7 @@ impl TerminalPanel {
                                             "New Terminal",
                                             workspace::NewTerminal::default().boxed_clone(),
                                         )
+                                        .action("New Claude", NewClaude.boxed_clone())
                                         // We want the focus to go back to terminal panel once task modal is dismissed,
                                         // hence we focus that first. Otherwise, we'd end up without a focused element, as
                                         // context menu will be gone the moment we spawn the modal.
@@ -692,6 +696,31 @@ impl TerminalPanel {
                 }
             })
             .detach_and_log_err(cx);
+    }
+
+    fn new_claude(
+        workspace: &mut Workspace,
+        _: &NewClaude,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let Some(terminal_panel) = workspace.panel::<Self>(cx) else {
+            return;
+        };
+        let working_directory = default_working_directory(workspace, cx);
+        let create = terminal_panel.update(cx, |terminal_panel, cx| {
+            terminal_panel.add_terminal_shell(working_directory, RevealStrategy::Always, window, cx)
+        });
+        cx.spawn_in(window, async move |_workspace, cx| {
+            let terminal = create.await?;
+            terminal.update(cx, |terminal, _| {
+                // Run `claude` as if typed at the prompt; `\r` (0x0d) is Enter
+                // (see the activation-script handling in `terminal.rs`).
+                terminal.input(b"claude\r".to_vec());
+            })?;
+            anyhow::Ok(())
+        })
+        .detach_and_log_err(cx);
     }
 
     fn terminals_for_task(
