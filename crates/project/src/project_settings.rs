@@ -777,6 +777,10 @@ pub enum SettingsObserverEvent {
     LocalSettingsUpdated(Result<PathBuf, InvalidSettingsError>),
     LocalTasksUpdated(Result<PathBuf, InvalidSettingsError>),
     LocalDebugScenariosUpdated(Result<PathBuf, InvalidSettingsError>),
+    /// A worktree's local `tasks.json` was successfully (re)loaded into the
+    /// task inventory. Used to trigger `open_project`-hooked tasks once the
+    /// worktree's tasks are available.
+    WorktreeTasksLoaded(WorktreeId),
 }
 
 impl EventEmitter<SettingsObserverEvent> for SettingsObserver {}
@@ -1368,6 +1372,7 @@ impl SettingsObserver {
                             cx.emit(SettingsObserverEvent::LocalTasksUpdated(Ok(directory
                                 .as_std_path()
                                 .join(task_file_name()))));
+                            cx.emit(SettingsObserverEvent::WorktreeTasksLoaded(worktree_id));
                         }
                     }
                 }

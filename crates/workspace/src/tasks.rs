@@ -174,8 +174,36 @@ impl Workspace {
     }
 
     pub fn run_create_worktree_tasks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let project = self.project().clone();
         let hooks = HashSet::from_iter([TaskHook::CreateWorktree]);
+        self.run_hook_tasks(hooks, "worktree_setup", None, window, cx);
+    }
+
+    /// Runs tasks tagged with [`TaskHook::OpenProject`] for the given worktree.
+    /// Called once per worktree per workspace session (see the dedup in
+    /// `Workspace`'s settings-observer subscription), so editing `tasks.json`
+    /// does not re-trigger these tasks.
+    pub fn run_open_project_tasks(
+        &mut self,
+        worktree_id: WorktreeId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let hooks = HashSet::from_iter([TaskHook::OpenProject]);
+        self.run_hook_tasks(hooks, "open_project", Some(worktree_id), window, cx);
+    }
+
+    /// Resolves and spawns every task whose `hooks` intersect `hooks`. When
+    /// `only_worktree` is `Some`, only that worktree's tasks are considered;
+    /// otherwise all of the project's worktrees are scanned.
+    fn run_hook_tasks(
+        &mut self,
+        hooks: HashSet<TaskHook>,
+        id_prefix: &str,
+        only_worktree: Option<WorktreeId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let project = self.project().clone();
 
         let worktree_tasks: Vec<(WorktreeId, TaskContext, Vec<TaskTemplate>)> = {
             let project = project.read(cx);
@@ -190,6 +218,9 @@ impl Workspace {
             for worktree in project.worktrees(cx) {
                 let worktree = worktree.read(cx);
                 let worktree_id = worktree.id();
+                if only_worktree.is_some_and(|only| only != worktree_id) {
+                    continue;
+                }
                 let worktree_abs_path = worktree.abs_path();
 
                 let templates: Vec<TaskTemplate> = inventory
@@ -231,10 +262,11 @@ impl Workspace {
             return;
         }
 
+        let id_prefix = id_prefix.to_string();
         let task = cx.spawn_in(window, async move |workspace, cx| {
             let mut tasks = Vec::new();
             for (worktree_id, task_context, templates) in worktree_tasks {
-                let id_base = format!("worktree_setup_{worktree_id}");
+                let id_base = format!("{id_prefix}_{worktree_id}");
 
                 tasks.push(cx.spawn({
                     let workspace = workspace.clone();
@@ -254,13 +286,13 @@ impl Workspace {
                                 match result {
                                     Ok(exit_status) if !exit_status.success() => {
                                         log::error!(
-                                            "Git worktree setup task failed with status: {:?}",
+                                            "Hook task {id_base} failed with status: {:?}",
                                             exit_status.code()
                                         );
                                         break;
                                     }
                                     Err(error) => {
-                                        log::error!("Git worktree setup task error: {error:#}");
+                                        log::error!("Hook task {id_base} error: {error:#}");
                                         break;
                                     }
                                     _ => {}

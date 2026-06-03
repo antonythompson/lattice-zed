@@ -1401,6 +1401,9 @@ pub struct Workspace {
     _items_serializer: Task<Result<()>>,
     session_id: Option<String>,
     scheduled_tasks: Vec<Task<()>>,
+    /// Worktrees whose `open_project`-hooked tasks have already been run this
+    /// session, so they fire at most once per worktree per workspace.
+    open_project_tasks_ran: HashSet<WorktreeId>,
     last_open_dock_positions: Vec<DockPosition>,
     removing: bool,
     open_in_dev_container: bool,
@@ -1530,6 +1533,12 @@ impl Workspace {
                         this.update_history(cx);
                     }
                 }
+                &project::Event::WorktreeTasksLoaded(id) => {
+                    if this.open_project_tasks_ran.insert(id) {
+                        this.run_open_project_tasks(id, window, cx);
+                    }
+                }
+
                 project::Event::WorktreeUpdatedEntries(..) => {
                     this.update_window_title(window, cx);
                     this.serialize_workspace(window, cx);
@@ -1848,6 +1857,7 @@ impl Workspace {
             session_id: Some(session_id),
 
             scheduled_tasks: Vec::new(),
+            open_project_tasks_ran: HashSet::default(),
             last_open_dock_positions: Vec::new(),
             removing: false,
             sidebar_focus_handle: None,

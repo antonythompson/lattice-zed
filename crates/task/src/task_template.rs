@@ -89,12 +89,18 @@ pub enum DebugArgsRequest {
     Attach(AttachRequest),
 }
 
-/// What to do with the terminal pane and tab, after the command was started.
+/// A lifecycle event that, when emitted, causes tasks tagged with the matching
+/// hook to be run automatically.
 #[derive(Clone, Copy, Debug, PartialEq, Hash, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskHook {
+    /// Runs when a new linked git worktree is created.
     #[serde(alias = "create_git_worktree")]
     CreateWorktree,
+    /// Runs when a project is opened in a workspace, including when a previous
+    /// session is restored. Fires at most once per worktree per workspace
+    /// session, so editing `tasks.json` does not re-trigger it.
+    OpenProject,
 }
 
 /// What to do with the terminal pane and tab, after the command was started.

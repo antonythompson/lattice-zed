@@ -364,6 +364,9 @@ pub enum Event {
     WorktreeAdded(WorktreeId),
     WorktreeOrderChanged,
     WorktreeRemoved(WorktreeId),
+    /// A worktree's local `tasks.json` finished (re)loading into the task
+    /// inventory, so its tasks are now available to enumerate and run.
+    WorktreeTasksLoaded(WorktreeId),
     WorktreeUpdatedEntries(WorktreeId, UpdatedEntriesSet),
     WorktreeUpdatedRootRepoCommonDir(WorktreeId),
     WorktreePathsChanged {
@@ -3739,6 +3742,9 @@ impl Project {
                 }),
                 Err(_) => {}
             },
+            SettingsObserverEvent::WorktreeTasksLoaded(worktree_id) => {
+                cx.emit(Event::WorktreeTasksLoaded(*worktree_id));
+            }
         }
     }
 
