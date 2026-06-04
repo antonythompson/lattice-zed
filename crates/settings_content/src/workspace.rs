@@ -37,6 +37,16 @@ pub struct WorkspaceSettingsContent {
     ///
     /// Default: false
     pub confirm_quit: Option<bool>,
+    /// Whether to automatically open a Claude terminal when a project is opened.
+    ///
+    /// Default: true
+    pub auto_open_claude: Option<bool>,
+    /// Whether to restore terminals from the previous session when a project is
+    /// opened. Restored terminals come back as plain shells (the original
+    /// command is not re-run), so this defaults to off.
+    ///
+    /// Default: false
+    pub restore_terminals: Option<bool>,
     /// Whether or not to show the call status icon in the status bar.
     ///
     /// Default: true

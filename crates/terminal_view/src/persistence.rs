@@ -14,9 +14,10 @@ use db::{
     sqlez::{domain::Domain, statement::Statement, thread_safe_connection::ThreadSafeConnection},
     sqlez_macros::sql,
 };
+use settings::Settings as _;
 use workspace::{
     ItemHandle, ItemId, Member, Pane, PaneAxis, PaneGroup, SerializableItem as _, Workspace,
-    WorkspaceDb, WorkspaceId,
+    WorkspaceDb, WorkspaceId, WorkspaceSettings,
 };
 
 use crate::{
@@ -95,10 +96,16 @@ pub(crate) fn deserialize_terminal_panel(
     window: &mut Window,
     cx: &mut App,
 ) -> Task<anyhow::Result<Entity<TerminalPanel>>> {
+    let restore_terminals = WorkspaceSettings::get_global(cx).restore_terminals;
     window.spawn(cx, async move |cx| {
         let terminal_panel = workspace.update_in(cx, |workspace, window, cx| {
             cx.new(|cx| TerminalPanel::new(workspace, window, cx))
         })?;
+        // Restored terminals come back as plain shells (no re-run command), so
+        // skip repopulating them unless the user opts in.
+        if !restore_terminals {
+            return Ok(terminal_panel);
+        }
         match &serialized_panel.items {
             SerializedItems::NoSplits(item_ids) => {
                 let items = deserialize_terminal_views(

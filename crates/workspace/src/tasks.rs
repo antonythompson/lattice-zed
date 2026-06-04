@@ -1,4 +1,5 @@
 use std::process::ExitStatus;
+use std::time::Duration;
 
 use anyhow::Result;
 use collections::HashSet;
@@ -264,6 +265,21 @@ impl Workspace {
 
         let id_prefix = id_prefix.to_string();
         let task = cx.spawn_in(window, async move |workspace, cx| {
+            // The terminal panel registers the terminal provider asynchronously,
+            // so a hook firing on project open can run before it's ready, which
+            // would silently drop the spawned tasks. Wait briefly for it.
+            for _ in 0..200 {
+                let ready = workspace
+                    .read_with(cx, |workspace, _| workspace.has_terminal_provider())
+                    .unwrap_or(true);
+                if ready {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+            }
+
             let mut tasks = Vec::new();
             for (worktree_id, task_context, templates) in worktree_tasks {
                 let id_base = format!("{id_prefix}_{worktree_id}");

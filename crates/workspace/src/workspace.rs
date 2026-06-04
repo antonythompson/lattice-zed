@@ -2961,6 +2961,10 @@ impl Workspace {
         self.terminal_provider = Some(Box::new(provider));
     }
 
+    pub fn has_terminal_provider(&self) -> bool {
+        self.terminal_provider.is_some()
+    }
+
     pub fn set_debugger_provider(&mut self, provider: impl DebuggerProvider + 'static) {
         self.debugger_provider = Some(Arc::new(provider));
     }

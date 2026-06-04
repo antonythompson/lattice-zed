@@ -12,8 +12,8 @@ use db::kvp::KeyValueStore;
 use futures::{channel::oneshot, future::join_all};
 use gpui::{
     Action, Anchor, AnyView, App, AsyncApp, AsyncWindowContext, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, TaskExt,
-    WeakEntity, Window, actions,
+    EntityId, FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled,
+    Subscription, Task, TaskExt, WeakEntity, Window, actions,
 };
 use itertools::Itertools;
 use project::{Fs, Project};
@@ -31,7 +31,7 @@ use workspace::{
     ActivatePaneUp, ActivatePreviousPane, DraggedTab, ItemId, MoveItemToPane,
     MoveItemToPaneInDirection, MovePaneDown, MovePaneLeft, MovePaneRight, MovePaneUp, Pane,
     PaneGroup, SplitDirection, SplitDown, SplitLeft, SplitMode, SplitRight, SplitUp, SwapPaneDown,
-    SwapPaneLeft, SwapPaneRight, SwapPaneUp, ToggleZoom, Workspace,
+    SwapPaneLeft, SwapPaneRight, SwapPaneUp, ToggleZoom, Workspace, WorkspaceSettings,
     dock::{DockPosition, Panel, PanelEvent, PanelHandle},
     item::SerializableItem,
     move_active_item, pane,
@@ -88,6 +88,8 @@ pub struct TerminalPanel {
     assistant_enabled: bool,
     assistant_tab_bar_button: Option<AnyView>,
     active: bool,
+    claude_auto_opened: bool,
+    _auto_open_claude_subscription: Subscription,
 }
 
 impl TerminalPanel {
@@ -95,6 +97,12 @@ impl TerminalPanel {
         let project = workspace.project();
         let pane = new_terminal_pane(workspace.weak_handle(), project.clone(), false, window, cx);
         let center = PaneGroup::new(pane.clone());
+        let auto_open_claude_subscription =
+            cx.subscribe_in(project, window, |this, _project, event, window, cx| {
+                if matches!(event, project::Event::WorktreeAdded(_)) {
+                    this.maybe_auto_open_claude(window, cx);
+                }
+            });
         let terminal_panel = Self {
             center,
             active_pane: pane,
@@ -106,8 +114,15 @@ impl TerminalPanel {
             assistant_enabled: false,
             assistant_tab_bar_button: None,
             active: false,
+            claude_auto_opened: false,
+            _auto_open_claude_subscription: auto_open_claude_subscription,
         };
         terminal_panel.apply_tab_bar_buttons(&terminal_panel.active_pane, cx);
+        // A project opened with folders already present won't emit WorktreeAdded
+        // after the subscription above is set up, so also check once on creation.
+        cx.defer_in(window, |this, window, cx| {
+            this.maybe_auto_open_claude(window, cx);
+        });
         terminal_panel
     }
 
@@ -707,20 +722,83 @@ impl TerminalPanel {
         let Some(terminal_panel) = workspace.panel::<Self>(cx) else {
             return;
         };
-        let working_directory = default_working_directory(workspace, cx);
-        let create = terminal_panel.update(cx, |terminal_panel, cx| {
-            terminal_panel.add_terminal_shell(working_directory, RevealStrategy::Always, window, cx)
+        terminal_panel.update(cx, |terminal_panel, cx| {
+            terminal_panel.open_claude_terminal(window, cx);
         });
-        cx.spawn_in(window, async move |_workspace, cx| {
+    }
+
+    /// Opens a new shell terminal in the project's working directory and runs
+    /// the Claude CLI in it, as if typed at the prompt; `\r` (0x0d) is Enter
+    /// (see the activation-script handling in `terminal.rs`).
+    fn open_claude_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let working_directory = self
+            .workspace
+            .read_with(cx, |workspace, cx| default_working_directory(workspace, cx))
+            .ok()
+            .flatten();
+        let create = self.add_terminal_shell(working_directory, RevealStrategy::Always, window, cx);
+        cx.spawn_in(window, async move |panel, cx| {
             let terminal = create.await?;
+            let terminal_id = terminal.entity_id();
             terminal.update(cx, |terminal, _| {
-                // Run `claude` as if typed at the prompt; `\r` (0x0d) is Enter
-                // (see the activation-script handling in `terminal.rs`).
                 terminal.input(b"claude\r".to_vec());
+            })?;
+            // An open_project task may open its own terminal right after Claude,
+            // and adding any terminal makes it the active tab regardless of the
+            // task's `reveal`. Re-assert Claude as the active tab after a beat.
+            cx.background_executor()
+                .timer(Duration::from_millis(800))
+                .await;
+            panel.update_in(cx, |panel, window, cx| {
+                panel.focus_claude_terminal(terminal_id, window, cx);
             })?;
             anyhow::Ok(())
         })
         .detach_and_log_err(cx);
+    }
+
+    /// Re-activates the Claude terminal tab (identified by its terminal entity),
+    /// so it stays focused on launch even if an `open_project` task opens a
+    /// terminal right after it.
+    fn focus_claude_terminal(
+        &mut self,
+        terminal_id: EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let index = self.active_pane.read(cx).items().position(|item| {
+            item.act_as::<TerminalView>(cx)
+                .is_some_and(|view| view.read(cx).terminal().entity_id() == terminal_id)
+        });
+        if let Some(index) = index {
+            self.active_pane.update(cx, |pane, cx| {
+                pane.activate_item(index, true, true, window, cx);
+            });
+        }
+    }
+
+    /// Auto-opens a Claude terminal once per workspace when a project is open,
+    /// gated by the `auto_open_claude` setting (default on).
+    fn maybe_auto_open_claude(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.claude_auto_opened || !WorkspaceSettings::get_global(cx).auto_open_claude {
+            return;
+        }
+        let has_project = self
+            .workspace
+            .read_with(cx, |workspace, cx| {
+                workspace
+                    .project()
+                    .read(cx)
+                    .visible_worktrees(cx)
+                    .next()
+                    .is_some()
+            })
+            .unwrap_or(false);
+        if !has_project {
+            return;
+        }
+        self.claude_auto_opened = true;
+        self.open_claude_terminal(window, cx);
     }
 
     fn terminals_for_task(

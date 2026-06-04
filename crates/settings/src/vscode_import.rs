@@ -1008,6 +1008,8 @@ impl VsCodeSettings {
                 "onWindowChange" => Some(AutosaveSetting::OnWindowChange),
                 _ => None,
             }),
+            auto_open_claude: None,
+            restore_terminals: None,
             bottom_dock_layout: None,
             centered_layout: None,
             cli_default_open_behavior: None,
