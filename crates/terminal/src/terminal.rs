@@ -403,6 +403,10 @@ impl TerminalBuilder {
             hyperlink_regex_searches: RegexSearches::default(),
             vi_mode_enabled: false,
             is_remote_terminal: false,
+            is_claude_terminal: false,
+            last_activity: Instant::now(),
+            activity_run_start: Instant::now(),
+            bell_pending: false,
             last_mouse_move_time: Instant::now(),
             last_hyperlink_search_position: None,
             mouse_down_hyperlink: None,
@@ -637,6 +641,10 @@ impl TerminalBuilder {
                 ),
                 vi_mode_enabled: false,
                 is_remote_terminal,
+                is_claude_terminal: false,
+                last_activity: Instant::now(),
+                activity_run_start: Instant::now(),
+                bell_pending: false,
                 last_mouse_move_time: Instant::now(),
                 last_hyperlink_search_position: None,
                 mouse_down_hyperlink: None,
@@ -873,6 +881,18 @@ pub struct Terminal {
     task: Option<TaskState>,
     vi_mode_enabled: bool,
     is_remote_terminal: bool,
+    /// True for terminals created via "New Claude" (running the Claude CLI), used by the title bar
+    /// to surface per-project Claude activity.
+    pub is_claude_terminal: bool,
+    /// When the terminal last produced PTY output; used to detect "actively working".
+    pub last_activity: Instant,
+    /// When the current continuous run of output began (reset after a quiet gap). Lets consumers
+    /// require sustained output before treating the terminal as busy, avoiding flicker from
+    /// split-second status-line updates.
+    pub activity_run_start: Instant,
+    /// Set when the program rang the bell (BEL) and cleared on the next output; a quiet terminal
+    /// with `bell_pending` is waiting for the user.
+    pub bell_pending: bool,
     last_mouse_move_time: Instant,
     last_hyperlink_search_position: Option<Point<Pixels>>,
     mouse_down_hyperlink: Option<(String, bool, Match)>,
@@ -983,6 +1003,7 @@ impl Terminal {
                 cx.emit(Event::BlinkChanged(blinking));
             }
             AlacTermEvent::Bell => {
+                self.bell_pending = true;
                 cx.emit(Event::Bell);
             }
             AlacTermEvent::Exit => self.register_task_finished(Some(9), cx),
@@ -990,6 +1011,14 @@ impl Terminal {
                 //NOOP, Handled in render
             }
             AlacTermEvent::Wakeup => {
+                let now = Instant::now();
+                // Start a new output "run" only after a quiet gap; back-to-back output keeps the
+                // existing run so consumers can require sustained output before showing "busy".
+                if now.duration_since(self.last_activity) > Duration::from_millis(250) {
+                    self.activity_run_start = now;
+                }
+                self.last_activity = now;
+                self.bell_pending = false;
                 cx.emit(Event::Wakeup);
 
                 if let TerminalType::Pty { info, .. } = &self.terminal_type {

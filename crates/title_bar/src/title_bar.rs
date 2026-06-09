@@ -29,8 +29,8 @@ use cloud_api_types::Plan;
 use gpui::{
     Action, Anchor, Animation, AnimationExt, AnyElement, App, Context, Element, Entity, Focusable,
     InteractiveElement, IntoElement, MouseButton, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Subscription, TaskExt, WeakEntity, Window, actions, div,
-    pulsating_between,
+    StatefulInteractiveElement, Styled, Subscription, Task, TaskExt, WeakEntity, Window, actions,
+    div, pulsating_between,
 };
 use onboarding_banner::OnboardingBanner;
 use project::{
@@ -40,8 +40,10 @@ use project::{
 use remote::RemoteConnectionOptions;
 use settings::Settings as _;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use theme::ActiveTheme;
 use title_bar_settings::TitleBarSettings;
 use ui::{
@@ -161,7 +163,80 @@ pub struct TitleBar {
     update_version: Entity<UpdateVersion>,
     screen_share_popover_handle: PopoverMenuHandle<ContextMenu>,
     _diagnostics_subscription: Option<gpui::Subscription>,
+    /// Periodic re-render so per-project Claude activity dots reflect terminals going quiet
+    /// (no event fires when output simply stops).
+    _claude_poll: Task<()>,
+    /// Process tree (parent pid -> child pids) refreshed each poll, used to spot background tasks a
+    /// Claude instance has spawned while it sits idle at the prompt.
+    process_children: HashMap<Pid, Vec<Pid>>,
+    system: System,
 }
+
+/// Aggregate state of a project's Claude terminal(s), surfaced as a dot on its tab.
+#[derive(Clone, Copy, PartialEq)]
+enum ClaudeActivity {
+    /// No Claude terminal in the project, or it is present but quiet (no dot).
+    None,
+    /// Idle at the prompt — waiting for the user.
+    Waiting,
+    /// Idle at the prompt, but has a background task still running.
+    Background,
+    /// Actively producing output.
+    Working,
+    /// Idle and showing an interactive prompt awaiting the user's answer.
+    Question,
+}
+
+impl ClaudeActivity {
+    fn rank(self) -> u8 {
+        match self {
+            ClaudeActivity::None => 0,
+            ClaudeActivity::Waiting => 1,
+            ClaudeActivity::Background => 2,
+            ClaudeActivity::Working => 3,
+            ClaudeActivity::Question => 4,
+        }
+    }
+
+    fn merge(self, other: Self) -> Self {
+        if other.rank() > self.rank() { other } else { self }
+    }
+
+    /// The icon and color for this state, or `None` when there's nothing to show.
+    fn indicator(self) -> Option<(IconName, Color)> {
+        match self {
+            // Amber spinner: generating. Blue timer: idle with a background task running.
+            // Green check: idle, your turn (done). Red bell: idle, asking you a question.
+            ClaudeActivity::Working => Some((IconName::LoadCircle, Color::Warning)),
+            ClaudeActivity::Background => Some((IconName::CountdownTimer, Color::Info)),
+            ClaudeActivity::Question => Some((IconName::Bell, Color::Error)),
+            ClaudeActivity::Waiting => Some((IconName::Check, Color::Success)),
+            ClaudeActivity::None => None,
+        }
+    }
+}
+
+/// How recently a Claude terminal must have produced output to count as "working".
+const CLAUDE_WORKING_WINDOW: Duration = Duration::from_millis(1500);
+/// Output must be sustained at least this long before showing the "working" state, so brief
+/// split-second status-line updates don't flicker the indicator to amber.
+const CLAUDE_MIN_WORKING_RUN: Duration = Duration::from_millis(200);
+/// How many visible lines to scan for an interactive prompt when a Claude terminal is idle.
+const CLAUDE_QUESTION_SCAN_LINES: usize = 25;
+
+/// Heuristic: does the visible terminal text show one of Claude's interactive prompts (a
+/// selection menu / permission request) awaiting the user's answer? Keyed off the navigation
+/// footer Claude renders under such prompts, which doesn't appear in ordinary output.
+fn looks_like_claude_question(lines: &[String]) -> bool {
+    lines.iter().any(|line| {
+        let line = line.to_ascii_lowercase();
+        line.contains("esc to cancel")
+            || line.contains("to navigate")
+            || line.contains("enter to select")
+    })
+}
+/// Cadence for re-rendering the title bar so activity dots update as terminals go quiet.
+const CLAUDE_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 
 impl Render for TitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -469,6 +544,21 @@ impl TitleBar {
 
         let banner = None;
 
+        let claude_poll = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(CLAUDE_POLL_INTERVAL).await;
+                if this
+                    .update(cx, |this, cx| {
+                        this.refresh_claude_process_tree(cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+
         let mut this = Self {
             platform_titlebar,
             application_menu,
@@ -482,6 +572,9 @@ impl TitleBar {
             update_version,
             screen_share_popover_handle: PopoverMenuHandle::default(),
             _diagnostics_subscription: None,
+            _claude_poll: claude_poll,
+            process_children: HashMap::new(),
+            system: System::new(),
         };
 
         this.observe_diagnostics(cx);
@@ -1080,16 +1173,31 @@ impl TitleBar {
                 let is_active = key == active_key;
                 let full_name = key.display_name(&path_detail_map);
                 let label = util::truncate_and_trailoff(&full_name, MAX_PROJECT_NAME_LENGTH);
+                let indicator = self
+                    .claude_activity_for_group(&key, cx)
+                    .indicator()
+                    .map(|(icon, color)| Icon::new(icon).size(IconSize::XSmall).color(color));
 
-                Button::new(("project-tab", index), label)
-                    .label_size(LabelSize::Small)
-                    .color(if is_active {
-                        Color::Default
-                    } else {
-                        Color::Muted
-                    })
+                // Always reserve the indicator slot so tabs don't shift as the status changes. The
+                // slot lives inside the tab, next to the label, so it's clear which project it's for.
+                let dot_slot = h_flex()
+                    .w(px(14.))
+                    .flex_none()
+                    .justify_center()
+                    .children(indicator);
+
+                ButtonLike::new(("project-tab", index))
                     .toggle_state(is_active)
                     .selected_style(ButtonStyle::Tinted(TintColor::Accent))
+                    .child(
+                        h_flex().gap_1().child(dot_slot).child(
+                            Label::new(label).size(LabelSize::Small).color(if is_active {
+                                Color::Default
+                            } else {
+                                Color::Muted
+                            }),
+                        ),
+                    )
                     .tooltip(Tooltip::text(full_name))
                     .on_click(cx.listener(move |_, _, window, cx| {
                         Self::switch_to_project_group(key.clone(), window, cx);
@@ -1099,6 +1207,7 @@ impl TitleBar {
 
         Some(
             h_flex()
+                .ml_4()
                 .px_0p5()
                 .gap_px()
                 .rounded_md()
@@ -1106,6 +1215,109 @@ impl TitleBar {
                 .children(tabs)
                 .into_any_element(),
         )
+    }
+
+    /// Aggregates the Claude-terminal activity for a project group across all of its workspaces in
+    /// this window: any waiting terminal wins, else any working one, else nothing.
+    fn claude_activity_for_group(&self, key: &ProjectGroupKey, cx: &App) -> ClaudeActivity {
+        let Some(multi_workspace) = self.multi_workspace.as_ref().and_then(|mw| mw.upgrade()) else {
+            return ClaudeActivity::None;
+        };
+
+        let mut activity = ClaudeActivity::None;
+        for workspace in multi_workspace.read(cx).workspaces() {
+            let workspace = workspace.read(cx);
+            if workspace.project_group_key(cx) != *key {
+                continue;
+            }
+            let project = workspace.project().read(cx);
+            for handle in project.local_terminal_handles() {
+                let Some(terminal) = handle.upgrade() else {
+                    continue;
+                };
+                let terminal = terminal.read(cx);
+                if !terminal.is_claude_terminal {
+                    continue;
+                }
+                // Claude Code doesn't reliably ring the terminal bell, so we infer state from output
+                // activity plus the process tree: producing output = working; otherwise it has
+                // handed the turn back to the user. While idle, a background task it spawned still
+                // running (a descendant process beyond the core CLI) shows as a distinct state.
+                let sustained = terminal
+                    .last_activity
+                    .saturating_duration_since(terminal.activity_run_start)
+                    >= CLAUDE_MIN_WORKING_RUN;
+                let state = if terminal.last_activity.elapsed() < CLAUDE_WORKING_WINDOW && sustained {
+                    ClaudeActivity::Working
+                } else if looks_like_claude_question(
+                    &terminal.last_n_non_empty_lines(CLAUDE_QUESTION_SCAN_LINES),
+                ) {
+                    ClaudeActivity::Question
+                } else if terminal.pid().is_some_and(|pid| self.has_running_background_task(pid)) {
+                    ClaudeActivity::Background
+                } else {
+                    ClaudeActivity::Waiting
+                };
+                activity = activity.merge(state);
+            }
+        }
+        activity
+    }
+
+    /// Refreshes the cached process tree, used to spot background tasks under idle Claude
+    /// terminals. Skips the scan entirely when the window has no Claude terminals.
+    fn refresh_claude_process_tree(&mut self, cx: &App) {
+        if !self.has_any_claude_terminal(cx) {
+            self.process_children.clear();
+            return;
+        }
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
+        for (pid, process) in self.system.processes() {
+            if let Some(parent) = process.parent() {
+                children.entry(parent).or_default().push(*pid);
+            }
+        }
+        self.process_children = children;
+    }
+
+    fn has_any_claude_terminal(&self, cx: &App) -> bool {
+        let Some(multi_workspace) = self.multi_workspace.as_ref().and_then(|mw| mw.upgrade()) else {
+            return false;
+        };
+        multi_workspace.read(cx).workspaces().any(|workspace| {
+            workspace
+                .read(cx)
+                .project()
+                .read(cx)
+                .local_terminal_handles()
+                .iter()
+                .any(|handle| {
+                    handle
+                        .upgrade()
+                        .is_some_and(|terminal| terminal.read(cx).is_claude_terminal)
+                })
+        })
+    }
+
+    /// Whether the `claude` CLI at `pid` has a running background task. Claude keeps persistent
+    /// child processes around even when idle (MCP servers, e.g. `php artisan mcp:start`), so the
+    /// presence of children alone isn't enough. A background command instead runs as a shell child
+    /// (`zsh -c …`) that has its own children (the actual command), so we look for a grandchild:
+    /// any child of `claude` that itself has children. The leaf MCP servers don't match.
+    fn has_running_background_task(&self, pid: Pid) -> bool {
+        let Some(children) = self.process_children.get(&pid) else {
+            return false;
+        };
+        children.iter().any(|child| {
+            self.process_children
+                .get(child)
+                .is_some_and(|grandchildren| !grandchildren.is_empty())
+        })
     }
 
     /// Activates the workspace for the given project group in the current

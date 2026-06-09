@@ -18314,6 +18314,7 @@ dependencies = [
  "serde",
  "settings",
  "smallvec",
+ "sysinfo 0.37.2",
  "telemetry",
  "theme",
  "ui",

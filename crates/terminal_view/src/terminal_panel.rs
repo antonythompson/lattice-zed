@@ -746,6 +746,7 @@ impl TerminalPanel {
             let terminal = create.await?;
             let terminal_id = terminal.entity_id();
             terminal.update(cx, |terminal, _| {
+                terminal.is_claude_terminal = true;
                 terminal.input(b"claude\r".to_vec());
             })?;
             // An open_project task may open its own terminal right after Claude,
