@@ -1,0 +1,27 @@
+[package]
+name = "task_manager"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/task_manager.rs"
+doctest = false
+
+[dependencies]
+collections.workspace = true
+gpui.workspace = true
+libc.workspace = true
+log.workspace = true
+project.workspace = true
+release_channel.workspace = true
+sysinfo.workspace = true
+terminal.workspace = true
+terminal_view.workspace = true
+ui.workspace = true
+util.workspace = true
+workspace.workspace = true

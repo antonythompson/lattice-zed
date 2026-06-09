@@ -14,7 +14,7 @@ pub use platform_title_bar::{
     self, DraggedWindowTab, MergeAllWindows, MoveTabToNewWindow, PlatformTitleBar,
     ShowNextWindowTab, ShowPreviousWindowTab,
 };
-use project::{linked_worktree_short_name, repo_identity_path};
+use project::{ProjectGroupKey, linked_worktree_short_name, repo_identity_path};
 
 #[cfg(not(target_os = "macos"))]
 use crate::application_menu::{
@@ -51,7 +51,7 @@ use ui::{
 use update_version::UpdateVersion;
 use util::ResultExt;
 use workspace::{
-    MultiWorkspace, ToggleWorktreeSecurity, Workspace,
+    MultiWorkspace, MultiWorkspaceEvent, OpenMode, ToggleWorktreeSecurity, Workspace,
     notifications::{NotifyResultExt, NotifyTaskExt as _},
 };
 
@@ -260,6 +260,7 @@ impl Render for TitleBar {
                                 .when(title_bar_settings.show_project_items, |title_bar| {
                                     title_bar
                                         .children(self.render_project_host(cx))
+                                        .children(self.render_project_tabs(cx))
                                         .child(self.render_project_name(project_name, window, cx))
                                 })
                                 .when_some(
@@ -436,6 +437,17 @@ impl TitleBar {
                     if matches!(event, workspace::Event::WorktreeCreationChanged) {
                         cx.notify();
                     }
+                },
+            ));
+        }
+        if let Some(multi_workspace) = multi_workspace.as_ref().and_then(|mw| mw.upgrade()) {
+            subscriptions.push(cx.subscribe(
+                &multi_workspace,
+                |_, _, event: &MultiWorkspaceEvent, cx| match event {
+                    MultiWorkspaceEvent::ProjectGroupsChanged
+                    | MultiWorkspaceEvent::ActiveWorkspaceChanged { .. }
+                    | MultiWorkspaceEvent::WorkspaceAdded(_)
+                    | MultiWorkspaceEvent::WorkspaceRemoved(_) => cx.notify(),
                 },
             ));
         }
@@ -765,41 +777,51 @@ impl TitleBar {
             .map(|mw| mw.read(cx).project_group_keys())
             .unwrap_or_default();
 
-        PopoverMenu::new("recent-projects-menu")
-            .menu(move |window, cx| {
-                Some(recent_projects::RecentProjects::popover(
-                    workspace.clone(),
-                    window_project_groups.clone(),
-                    false,
-                    focus_handle.clone(),
-                    window,
-                    cx,
-                ))
-            })
-            .trigger_with_tooltip(
-                Button::new("project_name_trigger", display_name)
-                    .label_size(LabelSize::Small)
-                    .when(self.worktree_count(cx) > 1, |this| {
-                        this.end_icon(
-                            Icon::new(IconName::ChevronDown)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
-                        )
-                    })
-                    .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                    .when(!is_project_selected, |s| s.color(Color::Muted)),
-                move |_window, cx| {
-                    Tooltip::for_action(
-                        "Recent Projects",
-                        &zed_actions::OpenRecent {
-                            create_new_window: false,
-                        },
-                        cx,
-                    )
+        let menu = PopoverMenu::new("recent-projects-menu").menu(move |window, cx| {
+            Some(recent_projects::RecentProjects::popover(
+                workspace.clone(),
+                window_project_groups.clone(),
+                false,
+                focus_handle.clone(),
+                window,
+                cx,
+            ))
+        });
+
+        let tooltip = move |_window: &mut Window, cx: &mut App| {
+            Tooltip::for_action(
+                "Projects",
+                &zed_actions::OpenRecent {
+                    create_new_window: false,
                 },
+                cx,
+            )
+        };
+
+        // When a project is open the project list is shown as tabs, so the menu
+        // is just a compact caret trigger. With no project open there are no
+        // tabs, so keep the descriptive label as the entry point.
+        if is_project_selected {
+            menu.trigger_with_tooltip(
+                IconButton::new("project_menu_trigger", IconName::ChevronDown)
+                    .icon_size(IconSize::XSmall)
+                    .icon_color(Color::Muted)
+                    .selected_style(ButtonStyle::Tinted(TintColor::Accent)),
+                tooltip,
             )
             .anchor(gpui::Anchor::TopLeft)
             .into_any_element()
+        } else {
+            menu.trigger_with_tooltip(
+                Button::new("project_name_trigger", display_name)
+                    .label_size(LabelSize::Small)
+                    .color(Color::Muted)
+                    .selected_style(ButtonStyle::Tinted(TintColor::Accent)),
+                tooltip,
+            )
+            .anchor(gpui::Anchor::TopLeft)
+            .into_any_element()
+        }
     }
 
     fn render_recent_projects_popover(
@@ -1036,6 +1058,102 @@ impl TitleBar {
                 })
                 .into_any_element(),
         )
+    }
+
+    /// Renders the projects open in this window as a row of tabs. Clicking a
+    /// tab activates that project's workspace within the current window. Only
+    /// shown when more than one project is open in the window.
+    fn render_project_tabs(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let multi_workspace = self.multi_workspace.as_ref()?.upgrade()?;
+        let project_groups = multi_workspace.read(cx).project_group_keys();
+        if project_groups.is_empty() {
+            return None;
+        }
+
+        let active_key = self.project.read(cx).project_group_key(cx);
+        let path_detail_map = std::collections::HashMap::new();
+
+        let tabs: Vec<_> = project_groups
+            .into_iter()
+            .enumerate()
+            .map(|(index, key)| {
+                let is_active = key == active_key;
+                let full_name = key.display_name(&path_detail_map);
+                let label = util::truncate_and_trailoff(&full_name, MAX_PROJECT_NAME_LENGTH);
+
+                Button::new(("project-tab", index), label)
+                    .label_size(LabelSize::Small)
+                    .color(if is_active {
+                        Color::Default
+                    } else {
+                        Color::Muted
+                    })
+                    .toggle_state(is_active)
+                    .selected_style(ButtonStyle::Tinted(TintColor::Accent))
+                    .tooltip(Tooltip::text(full_name))
+                    .on_click(cx.listener(move |_, _, window, cx| {
+                        Self::switch_to_project_group(key.clone(), window, cx);
+                    }))
+            })
+            .collect();
+
+        Some(
+            h_flex()
+                .px_0p5()
+                .gap_px()
+                .rounded_md()
+                .bg(cx.theme().colors().element_background)
+                .children(tabs)
+                .into_any_element(),
+        )
+    }
+
+    /// Activates the workspace for the given project group in the current
+    /// window, creating it from the group's paths if it isn't open yet.
+    fn switch_to_project_group(
+        key: ProjectGroupKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(handle) = window.window_handle().downcast::<MultiWorkspace>() else {
+            return;
+        };
+        cx.defer(move |cx| {
+            // Prefer activating an already-open workspace for this group so we
+            // preserve its actual worktree paths, which may differ from the
+            // main git worktree paths stored in the key.
+            if let Some(workspace) = handle
+                .update(cx, |multi_workspace, _window, cx| {
+                    multi_workspace.last_active_workspace_for_group(&key, cx)
+                })
+                .log_err()
+                .flatten()
+            {
+                handle
+                    .update(cx, |multi_workspace, window, cx| {
+                        multi_workspace.activate(workspace, None, window, cx);
+                    })
+                    .log_err();
+            } else {
+                let path_list = key.path_list().clone();
+                if let Some(task) = handle
+                    .update(cx, |multi_workspace, window, cx| {
+                        multi_workspace.find_or_create_local_workspace(
+                            path_list,
+                            Some(key.clone()),
+                            &[],
+                            None,
+                            OpenMode::Activate,
+                            window,
+                            cx,
+                        )
+                    })
+                    .log_err()
+                {
+                    task.detach_and_log_err(cx);
+                }
+            }
+        });
     }
 
     fn window_activation_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {

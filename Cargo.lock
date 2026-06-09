@@ -17798,6 +17798,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "task_manager"
+version = "0.1.0"
+dependencies = [
+ "collections",
+ "gpui",
+ "libc",
+ "log",
+ "project",
+ "release_channel",
+ "sysinfo 0.37.2",
+ "terminal",
+ "terminal_view",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "tasks_ui"
 version = "0.1.0"
 dependencies = [
@@ -22618,6 +22636,7 @@ dependencies = [
  "system_specs",
  "tab_switcher",
  "task",
+ "task_manager",
  "tasks_ui",
  "telemetry",
  "telemetry_events",

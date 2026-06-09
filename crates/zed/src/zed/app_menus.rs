@@ -290,6 +290,7 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                 MenuItem::action("Minimize", super::Minimize),
                 MenuItem::action("Zoom", super::Zoom),
                 MenuItem::separator(),
+                MenuItem::action("Task Manager", task_manager::OpenTaskManager),
             ],
         },
         Menu {

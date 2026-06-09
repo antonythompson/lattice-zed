@@ -586,6 +586,7 @@ fn main() {
         Client::set_global(client.clone(), cx);
 
         zed::init(cx);
+        task_manager::init(cx);
         #[cfg(target_os = "macos")]
         zed::move_to_applications::init(cx);
         project::Project::init(&client, cx);

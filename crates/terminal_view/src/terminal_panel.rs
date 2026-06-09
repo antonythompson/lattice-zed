@@ -722,20 +722,25 @@ impl TerminalPanel {
         let Some(terminal_panel) = workspace.panel::<Self>(cx) else {
             return;
         };
+        // Compute the working directory from the already-borrowed `workspace`
+        // here, rather than re-reading the `Workspace` entity inside
+        // `open_claude_terminal`. This action handler runs inside a
+        // `Workspace` update, so reading the same entity again would panic.
+        let working_directory = default_working_directory(workspace, cx);
         terminal_panel.update(cx, |terminal_panel, cx| {
-            terminal_panel.open_claude_terminal(window, cx);
+            terminal_panel.open_claude_terminal(working_directory, window, cx);
         });
     }
 
-    /// Opens a new shell terminal in the project's working directory and runs
-    /// the Claude CLI in it, as if typed at the prompt; `\r` (0x0d) is Enter
-    /// (see the activation-script handling in `terminal.rs`).
-    fn open_claude_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let working_directory = self
-            .workspace
-            .read_with(cx, |workspace, cx| default_working_directory(workspace, cx))
-            .ok()
-            .flatten();
+    /// Opens a new shell terminal in the given working directory and runs the
+    /// Claude CLI in it, as if typed at the prompt; `\r` (0x0d) is Enter (see
+    /// the activation-script handling in `terminal.rs`).
+    fn open_claude_terminal(
+        &mut self,
+        working_directory: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let create = self.add_terminal_shell(working_directory, RevealStrategy::Always, window, cx);
         cx.spawn_in(window, async move |panel, cx| {
             let terminal = create.await?;
@@ -798,7 +803,12 @@ impl TerminalPanel {
             return;
         }
         self.claude_auto_opened = true;
-        self.open_claude_terminal(window, cx);
+        let working_directory = self
+            .workspace
+            .read_with(cx, |workspace, cx| default_working_directory(workspace, cx))
+            .ok()
+            .flatten();
+        self.open_claude_terminal(working_directory, window, cx);
     }
 
     fn terminals_for_task(
