@@ -1,0 +1,46 @@
+name: Release macOS (Lattice)
+
+# Builds a macOS (Apple Silicon) release bundle and attaches the .dmg to a GitHub
+# Release whenever a `v*` tag is pushed. Runs on GitHub's free public-repo macos
+# runner. Without Apple signing secrets the app is ad-hoc signed (Gatekeeper will
+# require a right-click -> Open, or use `xattr -cr` after download).
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  bundle-mac:
+    runs-on: macos-14
+    timeout-minutes: 120
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+
+      # Installs the pinned Rust toolchain from rust-toolchain.toml on first use.
+      - name: Build and bundle (release, aarch64)
+        run: ./script/bundle-mac aarch64-apple-darwin
+
+      - name: Publish DMG to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          dmg="target/aarch64-apple-darwin/release/Zed-aarch64.dmg"
+          asset="${dmg}#Lattice-aarch64.dmg"
+          # Create the release if it doesn't exist yet, otherwise just add/replace the asset.
+          gh release create "$tag" --title "$tag" --generate-notes "$asset" \
+            || gh release upload "$tag" "$asset" --clobber

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#
+# Download the macOS .dmg from a GitHub Release and install Lattice.app into
+# /Applications — so you never have to open a browser to grab a CI build.
+#
+# Usage:
+#   script/deploy-from-release [tag]
+#
+# With no tag it targets the latest release. If the .dmg asset isn't published
+# yet (CI still building), it waits for it. The app is ad-hoc signed, so the
+# download quarantine is stripped after install to let it launch.
+
+set -euo pipefail
+
+# Pin the repo: `gh` otherwise auto-detects the fork's upstream (zed-industries/zed).
+repo="antonythompson/lattice-zed"
+
+tag="${1:-}"
+if [[ -z "$tag" ]]; then
+  tag="$(gh release view --repo "$repo" --json tagName -q .tagName)"
+fi
+echo "Target release: $repo @ $tag"
+
+# Wait for a .dmg asset to appear on the release (CI may still be building it).
+deadline=$(( $(date +%s) + 3600 ))
+until gh release view "$tag" --repo "$repo" --json assets -q '.assets[].name' 2>/dev/null | grep -q '\.dmg$'; do
+  if (( $(date +%s) > deadline )); then
+    echo "Timed out waiting for a .dmg asset on release $tag" >&2
+    exit 1
+  fi
+  echo "No .dmg on $tag yet — waiting for CI… (re-checking in 30s)"
+  sleep 30
+done
+
+workdir="$(mktemp -d)"
+trap 'rm -rf "$workdir"' EXIT
+gh release download "$tag" --repo "$repo" --pattern '*.dmg' --dir "$workdir" --clobber
+dmg="$(ls "$workdir"/*.dmg | head -1)"
+echo "Downloaded: $dmg"
+
+mount="$(hdiutil attach "$dmg" -nobrowse -noautoopen | grep -o '/Volumes/.*' | head -1)"
+app_src="$(ls -d "$mount"/*.app | head -1)"
+app_name="$(basename "$app_src")"
+echo "Installing $app_name -> /Applications"
+
+rm -rf "/Applications/$app_name"
+cp -R "$app_src" /Applications/
+hdiutil detach "$mount" >/dev/null
+
+# Ad-hoc signed + downloaded => quarantined; strip it so Gatekeeper lets it run.
+xattr -cr "/Applications/$app_name"
+
+echo "Installed /Applications/$app_name from release $tag"
