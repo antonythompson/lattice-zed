@@ -335,8 +335,17 @@ impl Render for TitleBar {
                                 .when(title_bar_settings.show_project_items, |title_bar| {
                                     title_bar
                                         .children(self.render_project_host(cx))
+                                        // Caret before the tabs so it stays put
+                                        // when closing a project shrinks the row;
+                                        // ml_2 keeps it off the window controls.
+                                        .child(
+                                            div().ml_2().child(self.render_project_name(
+                                                project_name,
+                                                window,
+                                                cx,
+                                            )),
+                                        )
                                         .children(self.render_project_tabs(cx))
-                                        .child(self.render_project_name(project_name, window, cx))
                                 })
                                 .when_some(
                                     repository.filter(|_| is_git_enabled),
@@ -1207,7 +1216,9 @@ impl TitleBar {
 
         Some(
             h_flex()
-                .ml_4()
+                // Sits directly against the caret to its left (which now
+                // precedes the tabs); only the parent's small gap separates
+                // them.
                 .px_0p5()
                 .gap_px()
                 .rounded_md()
