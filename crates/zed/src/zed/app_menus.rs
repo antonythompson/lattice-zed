@@ -269,6 +269,7 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                     },
                 ),
                 MenuItem::action("Start Debugger", debugger_ui::Start),
+                MenuItem::action("Database Pull…", database_pull::OpenDatabasePull),
                 MenuItem::separator(),
                 MenuItem::action("Edit tasks.json...", crate::zed::OpenProjectTasks),
                 MenuItem::action("Edit debug.json...", zed_actions::OpenProjectDebugTasks),

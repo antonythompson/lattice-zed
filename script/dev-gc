@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+
+# Reclaim Cargo build trash that Cargo itself never garbage-collects.
+#
+# Clears the incremental-compilation caches, which grow by a new session on
+# every rebuild and are never pruned. Incremental is purely a recompile
+# speed-up: deleting it never causes an incorrect build and is NOT a
+# from-scratch rebuild — every compiled crate `.rlib` in target/*/deps is
+# left intact, so unchanged crates are not recompiled. The only cost is that
+# the next recompile of a *changed* crate runs whole-crate instead of
+# incrementally.
+#
+# If `cargo-sweep` is installed it is also used to prune superseded artifacts
+# from older toolchains (safe: Cargo regenerates anything still needed).
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [[ ! -d target ]]; then
+    echo "no target directory — nothing to collect"
+    exit 0
+fi
+
+freed_kb=0
+for dir in target/debug/incremental target/release/incremental; do
+    if [[ -d "$dir" ]]; then
+        size_kb=$(du -sk "$dir" | cut -f1)
+        rm -rf "$dir"
+        freed_kb=$((freed_kb + size_kb))
+        printf 'cleared %s (%d GB)\n' "$dir" "$((size_kb / 1024 / 1024))"
+    fi
+done
+
+# Optional deeper prune of artifacts left by uninstalled/old toolchains.
+if command -v cargo-sweep >/dev/null 2>&1; then
+    echo "running cargo sweep --installed"
+    cargo sweep --installed || true
+fi
+
+printf 'reclaimed ~%d GB from incremental caches\n' "$((freed_kb / 1024 / 1024))"
+df -g . | awk 'NR==2 {print $4 " GB free on this volume"}'

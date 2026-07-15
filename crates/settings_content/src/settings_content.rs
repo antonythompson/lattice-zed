@@ -1204,6 +1204,167 @@ pub struct SshPortForwardOption {
     pub remote_port: u16,
 }
 
+/// Per-project configuration for pulling a remote MySQL/MariaDB database
+/// into a local database, a local file, or Google Drive.
+#[with_fallible_options]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct DatabasePullSettingsContent {
+    /// The environments this project can pull from (e.g. "NZ" and "AU", or
+    /// "prod" and "dev" on different servers). With more than one, the pull
+    /// asks which one to use. Each environment bundles its own SSH
+    /// connection, remote database, and targets.
+    pub environments: Option<Vec<DatabasePullEnvironmentContent>>,
+    /// Targets offered for every environment (e.g. a local file download that
+    /// makes sense regardless of which environment the dump came from).
+    pub shared_targets: Option<Vec<DatabasePullTargetContent>>,
+    /// Tables whose data is excluded from a live dump. Their structure is
+    /// still included, but no rows (e.g. log or session tables).
+    pub exclude_table_data: Option<Vec<String>>,
+}
+
+/// A remote environment to pull from. Sources are derived from this: setting
+/// `database` enables a live `mysqldump` source, and setting `backup_glob`
+/// enables a "newest backup file" source. Set both to offer a choice.
+#[with_fallible_options]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct DatabasePullEnvironmentContent {
+    /// Display name shown in the environment picker (e.g. "NZ", "prod").
+    pub name: String,
+    /// SSH connection to the server hosting this environment's database.
+    pub ssh: DatabasePullSshContent,
+    /// The remote database to dump. When set, a live-dump source is offered.
+    pub database: Option<String>,
+    /// How mysqldump authenticates on the server.
+    ///
+    /// Default: server_default
+    pub credentials: Option<RemoteDatabaseCredentialsContent>,
+    /// Extra arguments appended to the mysqldump invocations.
+    #[serde(default)]
+    pub mysqldump_args: Vec<String>,
+    /// Shell glob expanded on the server; the newest matching file is
+    /// downloaded. When set, a backup-file source is offered. Example:
+    /// "/var/backups/mysql/example_*.sql.gz"
+    pub backup_glob: Option<String>,
+    /// Targets specific to this environment (e.g. a local database to import
+    /// into, or an environment-specific cloud folder).
+    pub targets: Option<Vec<DatabasePullTargetContent>>,
+}
+
+/// SSH connection details for reaching the database server. Authentication
+/// uses the user's SSH keys/agent; passwords are not supported.
+#[with_fallible_options]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct DatabasePullSshContent {
+    pub host: String,
+    pub username: Option<String>,
+    pub port: Option<u16>,
+    /// Additional arguments passed to `ssh`.
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+/// A destination for the pulled dump.
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DatabasePullTargetContent {
+    /// Import into a local database, dropping and recreating it.
+    Database {
+        /// Display name shown in the target picker.
+        name: Option<String>,
+        /// Default: 127.0.0.1
+        host: Option<String>,
+        /// Default: 3306
+        port: Option<u16>,
+        /// Default: root
+        username: Option<String>,
+        /// Password for the local database user — a convenience for
+        /// throwaway local-dev credentials (e.g. root/root). A password
+        /// stored via the `database pull: set local database password`
+        /// action takes precedence.
+        password: Option<String>,
+        /// The local database name to (re)create and import into.
+        database: String,
+        /// Shell commands run in the project directory after this database is
+        /// imported (e.g. `cd public && wp search-replace <live> <local>`).
+        post_import: Option<Vec<PostImportStepContent>>,
+    },
+    /// Download the dump to a local file, without importing it.
+    File {
+        /// Display name shown in the target picker.
+        name: Option<String>,
+        /// A directory (the file is auto-named like `db-2026-07-15.sql.gz`)
+        /// or an exact destination file path. `~` is expanded.
+        path: String,
+    },
+    /// Upload the dump to a Google Drive folder.
+    Gdrive {
+        /// Display name shown in the target picker.
+        name: Option<String>,
+        /// Folder path by name inside Drive (e.g. "Backups/SBL"), created
+        /// if missing. The top-level folder must be shared with the service
+        /// account's email address.
+        folder: String,
+        /// Path to a Google service-account JSON key file (`~` is
+        /// expanded), or the literal "keychain" to use credentials imported
+        /// via the `database pull: import google drive credentials` action.
+        auth: String,
+    },
+    /// Upload the dump using a preconfigured `rclone` remote. Reuses your
+    /// existing rclone config (any backend: Drive, S3, Dropbox, …).
+    Rclone {
+        /// Display name shown in the target picker.
+        name: Option<String>,
+        /// The rclone destination. A trailing "/" (or a bare "remote:") is
+        /// treated as a directory and the dump is auto-named inside it;
+        /// otherwise it is the exact destination. Example:
+        /// "gdrive_backups:Vendella/Vendella NZ/"
+        dest: String,
+        /// Path to the rclone binary. Default: "rclone" (found on PATH).
+        rclone_path: Option<String>,
+    },
+}
+
+/// How mysqldump authenticates against the remote database server.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteDatabaseCredentialsContent {
+    /// Rely on the server's own MySQL client configuration
+    /// (e.g. `~/.my.cnf` or a login path) — no credentials handled by Zed.
+    #[default]
+    ServerDefault,
+    /// Use a username stored in settings and a password stored in the local
+    /// system keychain (set via the `database_pull::SetRemoteDatabasePassword`
+    /// action).
+    Keychain { username: String },
+    /// Read credentials from environment variables on the server. Suits
+    /// hosts that inject DB vars into the container environment, or Laravel
+    /// projects where an `.env` file can be sourced first. No credentials
+    /// are stored locally.
+    Env {
+        /// Optional path to a file to source on the server before reading
+        /// the variables (e.g. "/container/application/current/.env").
+        /// Omit when the variables are already present in the environment.
+        source: Option<String>,
+        /// Environment variable holding the username. Default: DB_USERNAME
+        user_var: Option<String>,
+        /// Environment variable holding the password. Default: DB_PASSWORD
+        password_var: Option<String>,
+        /// Environment variable holding the host. Default: DB_HOST
+        host_var: Option<String>,
+    },
+}
+
+/// A command run in the project directory after a successful import.
+#[with_fallible_options]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct PostImportStepContent {
+    /// Display name shown while the step runs. Defaults to the command text.
+    pub name: Option<String>,
+    /// The shell command to run.
+    pub command: String,
+}
+
 /// Settings for configuring REPL display and behavior.
 #[with_fallible_options]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]

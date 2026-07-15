@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+
+# Build the lattice-zed dev binary, first running `script/dev-gc` if free disk
+# space on this volume is below a threshold. This keeps a long session of
+# rebuilds from filling the disk and dying with ENOSPC mid-compile.
+#
+# Any extra arguments are passed through to `cargo build`, e.g.
+#   script/dev-build --release
+#
+# The threshold defaults to 15 GB and can be overridden:
+#   LATTICE_MIN_FREE_GB=25 script/dev-build
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+min_free_gb="${LATTICE_MIN_FREE_GB:-15}"
+avail_gb=$(df -g . | awk 'NR==2 {print $4}')
+
+printf 'free space: %s GB (threshold %s GB)\n' "$avail_gb" "$min_free_gb"
+if (( avail_gb < min_free_gb )); then
+    echo "below threshold — running garbage collection first"
+    script/dev-gc
+fi
+
+exec cargo build --bin lattice-zed "$@"

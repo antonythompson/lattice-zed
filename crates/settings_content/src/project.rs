@@ -75,6 +75,10 @@ pub struct ProjectSettingsContent {
     /// Default: 60
     pub context_server_timeout: Option<u64>,
 
+    /// Per-project configuration for pulling a remote database into a local
+    /// database. Typically set in a project's `.zed/settings.json`.
+    pub database_pull: Option<crate::DatabasePullSettingsContent>,
+
     /// Configuration for how direnv configuration should be loaded
     pub load_direnv: Option<DirenvSettings>,
 
