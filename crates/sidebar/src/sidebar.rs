@@ -38,6 +38,7 @@ use menu::{
 use project::{AgentId, AgentRegistryStore, Event as ProjectEvent, WorktreeId};
 use recent_projects::sidebar_recent_projects::SidebarRecentProjects;
 use remote::{RemoteConnectionOptions, same_remote_connection_identity};
+use scoro::{ScoroStore, ScoroTask};
 use ui::utils::platform_title_bar_height;
 
 use serde::{Deserialize, Serialize};
@@ -694,6 +695,7 @@ pub struct Sidebar {
     /// buttons. This field tracks whether we were using verbose labels so they
     /// can stay stable after dismissing one of the banners.
     import_banners_use_verbose_labels: Option<bool>,
+    scoro_store: Entity<ScoroStore>,
 }
 
 impl Sidebar {
@@ -772,6 +774,9 @@ impl Sidebar {
         )
         .detach();
 
+        let scoro_store = ScoroStore::global(cx);
+        cx.observe(&scoro_store, |_this, _store, cx| cx.notify()).detach();
+
         let deferred_multi_workspace = multi_workspace.downgrade();
         cx.defer_in(window, move |this, window, cx| {
             if let Some(multi_workspace) = deferred_multi_workspace.upgrade() {
@@ -811,11 +816,95 @@ impl Sidebar {
             _subscriptions: Vec::new(),
             _draft_editor_observations: Vec::new(),
             import_banners_use_verbose_labels: None,
+            scoro_store,
         }
     }
 
     fn serialize(&mut self, cx: &mut Context<Self>) {
         cx.emit(workspace::SidebarEvent::SerializeNeeded);
+    }
+
+    /// The persistent "Today" tasks section (from the global `ScoroStore`),
+    /// rendered above the project list. Clicking a task opens/activates its
+    /// project in the window. Returns `None` when there are no tasks and no
+    /// error, so the section takes no space.
+    fn render_today_section(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let store = self.scoro_store.read(cx);
+        let tasks = store.tasks().to_vec();
+        let error = store.error().cloned();
+        if tasks.is_empty() && error.is_none() {
+            return None;
+        }
+
+        let border = cx.theme().colors().border;
+        let mut section = v_flex()
+            .flex_none()
+            .px_1()
+            .pt_1p5()
+            .pb_1()
+            .border_b_1()
+            .border_color(border)
+            .child(
+                div().px_2().pb_1().child(
+                    Label::new("Today")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                ),
+            );
+        for (index, task) in tasks.iter().enumerate() {
+            section = section.child(self.render_today_task(index, task, cx));
+        }
+        if let Some(error) = error {
+            section = section.child(
+                div().px_2().py_1().child(
+                    Label::new(error)
+                        .size(LabelSize::XSmall)
+                        .color(Color::Error),
+                ),
+            );
+        }
+        Some(section.into_any_element())
+    }
+
+    fn render_today_task(
+        &self,
+        index: usize,
+        task: &ScoroTask,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let path = task.path.clone();
+        let hover_bg = cx.theme().colors().element_hover;
+        let dot = scoro_status_color(task.status.as_deref()).color(cx);
+        h_flex()
+            .id(("scoro-task", index))
+            .w_full()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .items_center()
+            .rounded_sm()
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover_bg))
+            .child(div().size(px(6.)).rounded_full().bg(dot))
+            .child(div().flex_1().child(Label::new(task.title.clone())))
+            .child(
+                Label::new(task.project.clone())
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_scoro_task(path.clone(), window, cx)
+            }))
+    }
+
+    fn open_scoro_task(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(multi_workspace) = self.multi_workspace.upgrade() {
+            multi_workspace
+                .update(cx, |multi_workspace, cx| {
+                    multi_workspace.open_project(vec![path], OpenMode::Activate, window, cx)
+                })
+                .detach_and_log_err(cx);
+        }
     }
 
     fn is_group_collapsed(&self, key: &ProjectGroupKey, cx: &App) -> bool {
@@ -7256,6 +7345,7 @@ impl Render for Sidebar {
             .map(|this| match &self.view {
                 SidebarView::ThreadList => this
                     .child(self.render_sidebar_header(no_open_projects, window, cx))
+                    .children(self.render_today_section(cx))
                     .map(|this| {
                         if no_open_projects {
                             this.child(self.render_empty_state(cx))
@@ -7304,6 +7394,23 @@ impl Render for Sidebar {
                 })
             })
             .child(self.render_sidebar_bottom_bar(cx))
+    }
+}
+
+fn scoro_status_color(status: Option<&str>) -> Color {
+    match status {
+        Some(status) if status.eq_ignore_ascii_case("done") => Color::Success,
+        Some(status) => {
+            let status = status.to_ascii_lowercase();
+            if status.contains("complet") || status.contains("done") {
+                Color::Success
+            } else if status.contains("progress") || status.contains("active") {
+                Color::Accent
+            } else {
+                Color::Muted
+            }
+        }
+        None => Color::Muted,
     }
 }
 

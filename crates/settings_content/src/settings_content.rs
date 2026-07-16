@@ -208,6 +208,8 @@ pub struct SettingsContent {
 
     pub project_panel: Option<ProjectPanelSettingsContent>,
 
+    pub scoro: Option<ScoroSettingsContent>,
+
     /// Configuration for the Message Editor
     pub message_editor: Option<MessageEditorSettings>,
 
@@ -1202,6 +1204,21 @@ pub struct SshPortForwardOption {
     pub local_port: u16,
     pub remote_host: Option<String>,
     pub remote_port: u16,
+}
+
+/// Settings for the Scoro "Today" tasks panel, which lists the day's tasks
+/// (read from a JSON file) and opens the matching project when one is clicked.
+#[with_fallible_options]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct ScoroSettingsContent {
+    /// Path to the JSON file listing the day's tasks. `~` is expanded. When
+    /// unset, defaults to `scoro-tasks.json` in Lattice's config directory.
+    /// An external process (e.g. a Scoro sync) keeps this file up to date.
+    pub tasks_file: Option<String>,
+    /// Whether to show the Today panel's button in the status bar.
+    ///
+    /// Default: true
+    pub button: Option<bool>,
 }
 
 /// Per-project configuration for pulling a remote MySQL/MariaDB database

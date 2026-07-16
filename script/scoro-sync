@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# Refresh the "Today" tasks file that Lattice's Scoro panel reads.
+#
+# Lattice itself only *reads* a JSON file (default:
+# ~/.config/lattice-zed/scoro-tasks.json, overridable via the
+# `scoro.tasks_file` user setting). This script is one way to *produce* that
+# file: it asks Claude (which has the Scoro MCP connected) to fetch today's
+# tasks and write them in the expected shape. Run it on a schedule (cron /
+# launchd) or on demand.
+#
+# Requirements: the `claude` CLI with the Scoro MCP available in this repo/dir.
+#
+# The JSON contract Lattice expects:
+#   { "generated_at": "<iso>", "tasks": [ {
+#       "id": "<scoro task id>",        # required
+#       "title": "<task title>",        # required
+#       "project": "<display group>",   # optional (falls back to dir name)
+#       "path": "<local project dir>",  # required; ~ is expanded
+#       "status": "...", "due": "YYYY-MM-DD", "url": "...", "branch": "..."  # optional
+#   } ] }
+#
+# Edit MAPPING below: it tells the producer which local directory each Scoro
+# project maps to. Only tasks whose Scoro project is listed here are emitted.
+
+set -euo pipefail
+
+# Absolute path so this works under cron/launchd (minimal PATH).
+CLAUDE_BIN="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
+OUT="${SCORO_TASKS_FILE:-$HOME/.config/lattice-zed/scoro-tasks.json}"
+
+# Scoro project name  =>  local project directory
+MAPPING=$(cat <<'MAP'
+Vendella = ~/Herd/vendella
+SBL = ~/Herd/sblauction
+MAP
+)
+
+read -r -d '' PROMPT <<PROMPT || true
+Use the Scoro MCP to build my task list for today. Steps:
+1. Call get_me to find my user id.
+2. Call get_tasks filtered to tasks assigned to me that are open (not
+   completed) and due today or overdue. Also read each task's latest comment.
+3. Emit ONLY a JSON object (no prose, no code fences) matching this shape:
+   { "generated_at": "<current ISO date>", "tasks": [ { "id","title","project",
+   "path","status","due","url" } ] }
+4. Map each task's Scoro project to a local "path" using this table; skip tasks
+   whose project is not in the table:
+${MAPPING}
+Set "url" to the task's Scoro web URL and "status" to the task's status name.
+PROMPT
+
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
+
+# --print returns just the model's final message; we expect raw JSON.
+# bypassPermissions is needed for unattended runs (no TTY to approve the Scoro
+# MCP tool calls). This prompt only *reads* Scoro and prints JSON — the file
+# write is done by this shell script below, not by Claude.
+"$CLAUDE_BIN" --print --permission-mode bypassPermissions "$PROMPT" >"$TMP"
+
+# Sanity-check it parses as JSON before replacing the live file (atomic).
+if command -v python3 >/dev/null 2>&1; then
+    python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$TMP"
+fi
+
+mkdir -p "$(dirname "$OUT")"
+mv "$TMP" "$OUT"
+trap - EXIT
+echo "wrote $OUT"

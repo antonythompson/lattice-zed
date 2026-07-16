@@ -176,6 +176,7 @@ members = [
     "crates/skill_creator",
     "crates/scheduler",
     "crates/schema_generator",
+    "crates/scoro",
     "crates/search",
     "crates/session",
     "crates/settings",
@@ -438,6 +439,7 @@ rpc = { path = "crates/rpc" }
 rules_library = { path = "crates/rules_library" }
 skill_creator = { path = "crates/skill_creator" }
 scheduler = { path = "crates/scheduler" }
+scoro = { path = "crates/scoro" }
 search = { path = "crates/search" }
 session = { path = "crates/session" }
 sidebar = { path = "crates/sidebar" }

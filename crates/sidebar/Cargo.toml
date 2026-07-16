@@ -37,6 +37,7 @@ project.workspace = true
 recent_projects.workspace = true
 remote.workspace = true
 remote_connection.workspace = true
+scoro.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 settings.workspace = true

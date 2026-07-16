@@ -15674,6 +15674,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "scoro"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fs",
+ "futures 0.3.32",
+ "gpui",
+ "paths",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "settings",
+ "shellexpand",
+]
+
+[[package]]
 name = "scratch"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16445,6 +16461,7 @@ dependencies = [
  "remote",
  "remote_connection",
  "remote_server",
+ "scoro",
  "semver",
  "serde",
  "serde_json",
@@ -22652,6 +22669,7 @@ dependencies = [
  "repl",
  "reqwest_client",
  "rope",
+ "scoro",
  "search",
  "semver",
  "serde",
